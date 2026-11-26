@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Merry Christmas · christmas-tree-v18</title>
+<title>My Love · christmas-tree-v18</title>
 <meta name="description" content="Particle Christmas tree with a gesture-controlled video head and photo ornaments.">
 <style>
   html,body{
@@ -16,7 +16,7 @@
 
   .panel{
     position:fixed;left:14px;bottom:14px;display:flex;gap:8px;flex-wrap:wrap;
-    max-width:min(92vw,420px);z-index:5;
+    max-width:calc(100vw - 28px);z-index:5;
   }
   .panel button{
     appearance:none;border:1px solid rgba(255,222,160,.28);
@@ -25,7 +25,7 @@
     padding:8px 12px;border-radius:999px;cursor:pointer;
     backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
     transition:background .2s,border-color .2s,transform .1s;
-    white-space:nowrap;
+    white-space:nowrap;flex:0 0 auto;
   }
   .panel button:hover{background:rgba(28,42,62,.8);border-color:rgba(255,222,160,.5)}
   .panel button:active{transform:scale(.97)}
@@ -36,7 +36,20 @@
     color:#6f7a92;font-size:12px;letter-spacing:.12em;pointer-events:none;
     opacity:.75;transition:opacity .8s;user-select:none;z-index:1;
   }
-  @media (max-width:560px){ .hint{bottom:64px;font-size:11px} }
+  @media (max-width:560px){
+    .hint{display:none}
+    .panel{left:10px;right:10px;bottom:10px;gap:6px}
+    .panel button{padding:7px 10px;font-size:11px;letter-spacing:.02em}
+  }
+
+  .toast{
+    position:fixed;left:50%;bottom:74px;transform:translate(-50%,10px);
+    background:rgba(10,18,30,.9);border:1px solid rgba(255,222,160,.28);
+    color:#f1e4c8;font-size:12px;letter-spacing:.05em;padding:9px 16px;border-radius:999px;
+    opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;z-index:8;
+    max-width:86vw;white-space:nowrap;
+  }
+  .toast.on{opacity:1;transform:translate(-50%,0)}
 
   .tag{
     position:fixed;right:14px;top:12px;color:#55607a;font-size:11px;
@@ -65,17 +78,21 @@
 <div class="panel">
   <button id="btnPhoto">＋ 照片挂件</button>
   <button id="btnHead">＋ 头像 / 视频</button>
-  <button id="btnClear" class="ghost">清空挂件</button>
+  <button id="btnSave">保存图片</button>
+  <button id="btnExport">导出网页</button>
+  <button id="btnClear" class="ghost">清空</button>
 </div>
 
 <div class="hint" id="hint">拖动旋转 · 滚轮/双指缩放 · 点树点亮</div>
 <div class="tag">v18.0</div>
 
+<div class="toast" id="toast"></div>
 <div class="modal" id="modal"><span class="close" id="modalClose">关闭 ✕</span><img id="modalImg" alt=""></div>
 
 <input id="filePhoto" type="file" accept="image/*" multiple hidden>
 <input id="fileHead" type="file" accept="image/*,video/*" hidden>
 
+<script id="savedData">window.__SAVED = null;</script>
 <script>
 (function(){
 'use strict';
@@ -224,35 +241,44 @@ function project(x,y,z,cr,sr){
 }
 
 /* ---------- 照片挂件 ---------- */
-function addPhotoImage(img){
+function addPhotoImage(img, opt){
+  opt = opt || {};
   var n = photoItems.length;
-  /* 找一个不与已有挂件重叠的位置 */
-  var h = 0.2, a = n * 2.399, size = 34 + Math.random() * 8;
-  for (var tries = 0; tries < 40; tries++){
-    var ch = 0.16 + Math.random() * 0.68;
-    var ca = Math.random() * Math.PI * 2;
-    var ok = true;
-    for (var j = 0; j < photoItems.length; j++){
-      var o = photoItems[j];
-      var ry1 = coneRadius(ch), ry2 = coneRadius(o.h);
-      var dx = Math.cos(ca) * ry1 - Math.cos(o.a) * ry2;
-      var dz = Math.sin(ca) * ry1 - Math.sin(o.a) * ry2;
-      var dy = (-TREE_H/2 + TREE_H*(1-ch)) - (-TREE_H/2 + TREE_H*(1-o.h));
-      if (Math.sqrt(dx*dx + dz*dz + dy*dy*0.55) < 78) { ok = false; break; }
+  var size = opt.size || (34 + Math.random() * 8);
+  var h, a;
+  if (opt.h != null && opt.a != null){
+    h = opt.h; a = opt.a;
+  } else {
+    h = 0.2; a = n * 2.399;
+    for (var tries = 0; tries < 40; tries++){
+      var ch = 0.16 + Math.random() * 0.68;
+      var ca = Math.random() * Math.PI * 2;
+      var ok = true;
+      for (var j = 0; j < photoItems.length; j++){
+        var o = photoItems[j];
+        var ry1 = coneRadius(ch), ry2 = coneRadius(o.h);
+        var dx = Math.cos(ca) * ry1 - Math.cos(o.a) * ry2;
+        var dz = Math.sin(ca) * ry1 - Math.sin(o.a) * ry2;
+        var dy = (-TREE_H/2 + TREE_H*(1-ch)) - (-TREE_H/2 + TREE_H*(1-o.h));
+        if (Math.sqrt(dx*dx + dz*dz + dy*dy*0.55) < 78) { ok = false; break; }
+      }
+      if (ok){ h = ch; a = ca; break; }
     }
-    if (ok){ h = ch; a = ca; break; }
   }
-  photoItems.push({
+  var item = {
     img: img,
     h: h,
     a: a,
     size: size,
     ph: Math.random() * Math.PI * 2,
     spinPh: rand(0.8, 1.6),
-    born: performance.now(),
-    sx: -999, sy: -999, r: 0
-  });
+    born: opt.instant ? performance.now() - 2000 : performance.now(),
+    sx: -999, sy: -999, r: 0,
+    data: opt.data || null
+  };
+  photoItems.push(item);
   if (photoItems.length > 15) photoItems.shift();
+  return item;
 }
 
 function loadFile(file, cb){
@@ -283,9 +309,70 @@ function setHead(file){
     } else {
       avatar.img = res.img; avatar.mode = 'photo';
       if (avatar.video){ avatar.video.pause(); avatar.video = null; }
+      var d = thumb(res.img, 900, 0.85);
+      saved.head = d ? { type: 'photo', d: d } : null;
+      saveStore();
+    }
+    if (res.video){
+      saved.head = null;
+      saveStore();
+      toast('视频不保存，刷新后需重新上传；照片头像会保留');
     }
     avatar.scale = 1; avatar.yaw = 0;
   });
+}
+
+/* ---------- 本地保存 ---------- */
+var LS_KEY = 'xmas-tree-v19';
+var saved = { photos: [], head: null };
+try {
+  var rawSaved = localStorage.getItem(LS_KEY);
+  if (rawSaved) saved = JSON.parse(rawSaved);
+} catch (e) { saved = { photos: [], head: null }; }
+if (!saved.photos) saved.photos = [];
+
+var toastEl = document.getElementById('toast');
+var toastTimer = 0;
+function toast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ toastEl.classList.remove('on'); }, 2600);
+}
+
+function saveStore(){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(saved)); }
+  catch (e) { toast('本地空间不足，照片未能保存'); }
+}
+
+function syncPhotos(){
+  saved.photos = [];
+  for (var i = 0; i < photoItems.length; i++){
+    var it = photoItems[i];
+    if (it.data) saved.photos.push({ d: it.data, h: it.h, a: it.a, size: it.size });
+  }
+  saveStore();
+}
+
+/* 把图片压成缩略 dataURL，便于存本地 */
+function thumb(img, max, q){
+  var w = img.width, h = img.height;
+  if (!w || !h) return null;
+  var s = Math.min(1, max / Math.max(w, h));
+  var cv = document.createElement('canvas');
+  cv.width = Math.round(w * s);
+  cv.height = Math.round(h * s);
+  var c2 = cv.getContext('2d');
+  c2.drawImage(img, 0, 0, cv.width, cv.height);
+  try { return cv.toDataURL('image/jpeg', q || 0.82); } catch (e) { return null; }
+}
+
+function downloadBlob(blob, name){
+  var a = document.createElement('a');
+  var u = URL.createObjectURL(blob);
+  a.href = u; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(u); a.remove(); }, 4000);
 }
 
 /* ---------- 上传交互 ---------- */
@@ -293,7 +380,12 @@ var filePhoto = document.getElementById('filePhoto');
 var fileHead = document.getElementById('fileHead');
 document.getElementById('btnPhoto').onclick = function(){ filePhoto.click(); };
 document.getElementById('btnHead').onclick = function(){ fileHead.click(); };
-document.getElementById('btnClear').onclick = function(){ photoItems.length = 0; };
+document.getElementById('btnClear').onclick = function(){
+  photoItems.length = 0;
+  saved.photos = [];
+  saveStore();
+  toast('已清空挂件');
+};
 
 filePhoto.onchange = function(){
   var files = Array.prototype.slice.call(filePhoto.files || []);
@@ -306,6 +398,52 @@ fileHead.onchange = function(){
   if (fileHead.files && fileHead.files[0]) setHead(fileHead.files[0]);
   fileHead.value = '';
 };
+
+document.getElementById('btnSave').onclick = function(){
+  canvas.toBlob(function(b){
+    if (!b){ toast('保存失败'); return; }
+    downloadBlob(b, 'christmas-tree.png');
+    toast('已保存为图片');
+  }, 'image/png');
+};
+
+document.getElementById('btnExport').onclick = function(){
+  try {
+    var data = { photos: saved.photos, head: saved.head };
+    var json = JSON.stringify(data).replace(/</g, '\\u003c');
+    var src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    var block = '<script id="savedData">window.__SAVED=' + json + ';<\/script>';
+    var out = src.replace(/<script id="savedData">[\s\S]*?<\/script>/, function(){ return block; });
+    downloadBlob(new Blob([out], { type: 'text/html;charset=utf-8' }), 'christmas-tree.html');
+    toast('已导出网页，照片已内置');
+  } catch (e) {
+    toast('导出失败');
+  }
+};
+
+/* ---------- 启动时恢复 ---------- */
+function restoreSaved(){
+  if (window.__SAVED && window.__SAVED.photos){
+    saved = window.__SAVED;
+    if (!saved.photos) saved.photos = [];
+    if (!saved.head) saved.head = null;
+  }
+  if (saved.head && saved.head.type === 'photo' && saved.head.d){
+    var him = new Image();
+    him.onload = function(){ avatar.img = him; avatar.mode = 'photo'; avatar.scale = 1; };
+    him.src = saved.head.d;
+  }
+  var ps = saved.photos || [];
+  ps.forEach(function(p){
+    var im = new Image();
+    im.onload = function(){
+      var it = addPhotoImage(im, { h: p.h, a: p.a, size: p.size, instant: true, data: p.d });
+      it.data = p.d;
+    };
+    im.src = p.d;
+  });
+  if (ps.length) toast('已恢复上次挂的 ' + ps.length + ' 张照片');
+}
 
 /* ---------- 图片预览 ---------- */
 var modal = document.getElementById('modal');
@@ -638,10 +776,17 @@ function drawPhotos(cr, sr){
 /* 标题 */
 function drawTitle(){
   var base = Math.min(W*1.05, H*0.62);
-  var fs = Math.max(20, Math.min(base*0.080, 68));
+  var fs = Math.max(18, Math.min(base*0.080, 68));
+  if (fs > 18){
+    ctx.font = '600 '+fs+'px Georgia, "Songti SC", serif';
+    var tw0 = ctx.measureText('My Love').width;
+    if (tw0 > W*0.88) fs = Math.max(16, fs * (W*0.88) / tw0);
+  }
   var treeBottom = CY + (TREE_H/2)*fitZoom*zoom*0.98;
-  var ty = Math.min(treeBottom + fs*1.45, H*0.855);
-  fs = Math.min(fs, Math.max(18, (H*0.855 - treeBottom)/1.9));
+  var bottomReserve = (W < 620) ? 132 : 40;
+  var limit = H - bottomReserve - fs*1.2;
+  var ty = Math.min(treeBottom + fs*1.35, limit);
+  if (ty < treeBottom + fs*0.6) ty = treeBottom + fs*0.6;
 
   var grad = ctx.createLinearGradient(CX-fs*5, ty, CX+fs*5, ty+fs*0.5);
   grad.addColorStop(0,'#c9a86a');
@@ -655,7 +800,7 @@ function drawTitle(){
   ctx.shadowColor = 'rgba(255,214,140,0.85)';
   ctx.shadowBlur = 26 + 10*Math.sin(time*0.0015);
   ctx.fillStyle = grad;
-  ctx.fillText('Merry Christmas', CX, ty);
+  ctx.fillText('My Love', CX, ty);
 
   var sub = Math.max(11, fs*0.22);
   ctx.font = '400 '+sub+'px Georgia, serif';
@@ -808,6 +953,7 @@ function frame(now){
 resize();
 buildTree();
 buildSnow();
+restoreSaved();
 requestAnimationFrame(frame);
 
 setTimeout(function(){ document.getElementById('hint').style.opacity = 0.35; }, 9000);
