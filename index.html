@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Merry Christmas · christmas-tree-v17.6</title>
-<meta name="description" content="A particle Christmas tree — drag to rotate, scroll to zoom.">
+<title>Merry Christmas · christmas-tree-v18</title>
+<meta name="description" content="Particle Christmas tree with a gesture-controlled video head and photo ornaments.">
 <style>
   html,body{
     margin:0;height:100%;background:#03050d;overflow:hidden;
@@ -13,21 +13,69 @@
   }
   canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab}
   canvas:active{cursor:grabbing}
+
+  .panel{
+    position:fixed;left:14px;bottom:14px;display:flex;gap:8px;flex-wrap:wrap;
+    max-width:min(92vw,420px);z-index:5;
+  }
+  .panel button{
+    appearance:none;border:1px solid rgba(255,222,160,.28);
+    background:rgba(12,20,34,.62);color:#f3e3c0;
+    font-family:"Songti SC",Georgia,serif;font-size:13px;letter-spacing:.06em;
+    padding:8px 12px;border-radius:999px;cursor:pointer;
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    transition:background .2s,border-color .2s,transform .1s;
+    white-space:nowrap;
+  }
+  .panel button:hover{background:rgba(28,42,62,.8);border-color:rgba(255,222,160,.5)}
+  .panel button:active{transform:scale(.97)}
+  .panel button.ghost{color:#93a0b8;border-color:rgba(150,170,200,.2)}
+
   .hint{
     position:fixed;left:0;right:0;bottom:16px;text-align:center;
-    color:#6f7a92;font-size:12px;letter-spacing:.14em;pointer-events:none;
-    opacity:.7;transition:opacity .6s;user-select:none;
+    color:#6f7a92;font-size:12px;letter-spacing:.12em;pointer-events:none;
+    opacity:.75;transition:opacity .8s;user-select:none;z-index:1;
   }
+  @media (max-width:560px){ .hint{bottom:64px;font-size:11px} }
+
   .tag{
     position:fixed;right:14px;top:12px;color:#55607a;font-size:11px;
     letter-spacing:.1em;pointer-events:none;user-select:none;opacity:.6;
+  }
+
+  .modal{
+    position:fixed;inset:0;background:rgba(2,4,10,.86);z-index:20;
+    display:none;align-items:center;justify-content:center;
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  }
+  .modal.on{display:flex}
+  .modal img{
+    max-width:86vw;max-height:78vh;border-radius:14px;
+    box-shadow:0 0 0 1px rgba(255,222,160,.35),0 24px 70px rgba(0,0,0,.6);
+  }
+  .modal .close{
+    position:absolute;top:18px;right:20px;color:#e8d9b6;font-size:14px;
+    letter-spacing:.1em;cursor:pointer;padding:10px;user-select:none;
   }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div class="hint" id="hint">拖动旋转 · 滚轮缩放 · 点击点亮</div>
-<div class="tag">v17.6</div>
+
+<div class="panel">
+  <button id="btnPhoto">＋ 照片挂件</button>
+  <button id="btnHead">＋ 头像 / 视频</button>
+  <button id="btnClear" class="ghost">清空挂件</button>
+</div>
+
+<div class="hint" id="hint">拖动旋转 · 滚轮/双指缩放 · 点树点亮</div>
+<div class="tag">v18.0</div>
+
+<div class="modal" id="modal"><span class="close" id="modalClose">关闭 ✕</span><img id="modalImg" alt=""></div>
+
+<input id="filePhoto" type="file" accept="image/*" multiple hidden>
+<input id="fileHead" type="file" accept="image/*,video/*" hidden>
+
 <script>
 (function(){
 'use strict';
@@ -37,133 +85,106 @@ var ctx = canvas.getContext('2d');
 var DPR = Math.min(window.devicePixelRatio || 1, 2);
 var W = 0, H = 0, CX = 0, CY = 0;
 
-/* ---------- 尺寸 ---------- */
+/* ---------- 基本参数 ---------- */
+var TREE_H = 640;
+var TREE_R = 236;
+var FOCAL  = 1250;
+var HEAD_Y = -462;      /* 树顶上方 285 单位处 */
+var HEAD_R = 92;              /* 头像世界半径 */
+
+var fitZoom = 1;
+var rotY = 0.4;
+var rotV = 0.00035;
+var zoom = 1, targetZoom = 1;
+var tilt = 0.12;
+var pulse = 0;
+var time = 0;
+var reduced = false;
+
+var treeParts = [], ornament = [], snow = [], bursts = [], backStars = [], photoItems = [];
+
+var avatar = { img:null, video:null, mode:'none', spin:0, yaw:0, scale:1, playing:true };
+var headScreen = { x:-999, y:-999, r:0 };
+
+/* ---------- 工具 ---------- */
+function rand(a,b){ return a + Math.random()*(b-a); }
+
 function resize(){
   W = window.innerWidth; H = window.innerHeight;
-  canvas.width = Math.floor(W * DPR);
-  canvas.height = Math.floor(H * DPR);
-  canvas.style.width = W + 'px';
-  canvas.style.height = H + 'px';
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  CX = W / 2;
-  CY = H * 0.44;
-  fitZoom = Math.min(W * 0.62 / (TREE_R * 2), H * 0.66 / TREE_H);
+  canvas.width = Math.floor(W*DPR); canvas.height = Math.floor(H*DPR);
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2;
+  CY = H*0.505;
+  fitZoom = Math.min(W*0.60/(TREE_R*2), H*0.50/TREE_H);
+  reduced = W < 620;
   buildBackStars();
 }
-var fitZoom = 1;
 
-/* ---------- 光晕贴图缓存 ---------- */
 var glowCache = {};
-function makeGlow(r, g, b){
-  var key = r + '_' + g + '_' + b;
+function makeGlow(r,g,b){
+  var key = r+'_'+g+'_'+b;
   if (glowCache[key]) return glowCache[key];
-  var size = 64;
-  var cv = document.createElement('canvas');
+  var size = 64, cv = document.createElement('canvas');
   cv.width = cv.height = size;
   var c2 = cv.getContext('2d');
-  var rg = c2.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
-  rg.addColorStop(0.00, 'rgba(255,255,255,0.95)');
-  rg.addColorStop(0.12, 'rgba(' + r + ',' + g + ',' + b + ',1)');
-  rg.addColorStop(0.30, 'rgba(' + r + ',' + g + ',' + b + ',0.72)');
-  rg.addColorStop(0.58, 'rgba(' + r + ',' + g + ',' + b + ',0.22)');
-  rg.addColorStop(1.00, 'rgba(' + r + ',' + g + ',' + b + ',0)');
-  c2.fillStyle = rg;
-  c2.fillRect(0, 0, size, size);
-  glowCache[key] = cv;
-  return cv;
+  var rg = c2.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);
+  rg.addColorStop(0.00,'rgba(255,255,255,0.95)');
+  rg.addColorStop(0.12,'rgba('+r+','+g+','+b+',1)');
+  rg.addColorStop(0.30,'rgba('+r+','+g+','+b+',0.72)');
+  rg.addColorStop(0.58,'rgba('+r+','+g+','+b+',0.22)');
+  rg.addColorStop(1.00,'rgba('+r+','+g+','+b+',0)');
+  c2.fillStyle = rg; c2.fillRect(0,0,size,size);
+  glowCache[key] = cv; return cv;
 }
 
-/* ---------- 常量与场景数据 ---------- */
-var TREE_H = 640;          /* 树高（世界单位） */
-var TREE_R = 236;          /* 底部半径 */
-var FOCAL  = 1250;         /* 透视焦距 */
+function coneRadius(h){ return TREE_R * Math.pow(1-h, 1.12); }
 
-var treeParts = [];        /* 针叶 / 暖光粒子 */
-var ornament = [];         /* 彩球 */
-var snow = [];             /* 雪花 */
-var bursts = [];           /* 点击爆发的光点 */
-var backStars = [];        /* 背景星点 */
-
-var rotY = 0.4;            /* 当前旋转角 */
-var rotV = 0.00035;        /* 自动旋转速度 rad/ms */
-var zoom = 1;
-var targetZoom = 1;
-var tilt = 0.12;           /* 轻微俯视角 */
-var touchShiftX = 0;
-
-var pulse = 0;             /* 点击后的全局脉冲 0..1 */
-var hintEl = document.getElementById('hint');
-
-var reduced = W < 620;     /* 小屏降级 */
-
-function rand(a, b){ return a + Math.random() * (b - a); }
-
-/* 圆锥：h=0 底部 -> 1 顶部 */
-function coneRadius(h){ return TREE_R * Math.pow(1 - h, 1.12); }
-
+/* ---------- 场景构建 ---------- */
 function buildTree(){
-  treeParts.length = 0;
-  ornament.length = 0;
-
+  treeParts.length = 0; ornament.length = 0;
   var foliage = reduced ? 1300 : 2100;
-  for (var i = 0; i < foliage; i++){
-    var h = Math.pow(Math.random(), 0.62);           /* 底部更密 */
-    var rr = coneRadius(h) * (0.62 + Math.random() * 0.42);
-    var a = Math.random() * Math.PI * 2;
-    var y = -TREE_H / 2 + TREE_H * (1 - h);
+  for (var i=0;i<foliage;i++){
+    var h = Math.pow(Math.random(), 0.62);
+    var rr = coneRadius(h) * (0.62 + Math.random()*0.42);
+    var a = Math.random()*Math.PI*2;
+    var y = -TREE_H/2 + TREE_H*(1-h);
     var gold = Math.random() < 0.10;
-    var bright = 0.35 + Math.random() * 0.65;
+    var bright = 0.35 + Math.random()*0.65;
     treeParts.push({
-      x: Math.cos(a) * rr, z: Math.sin(a) * rr, y: y,
-      size: gold ? rand(5, 9) : rand(3.6, 7.4),
-      r: gold ? 255 : 26 + Math.floor(20 * bright),
-      g: gold ? 198 : 120 + Math.floor(90 * bright),
-      b: gold ? 110 : 70 + Math.floor(40 * bright),
-      a: (gold ? 0.42 : 0.18) + Math.random() * 0.40,
-      tw: Math.random() * Math.PI * 2,
-      tws: rand(0.6, 1.8)
+      x: Math.cos(a)*rr, z: Math.sin(a)*rr, y: y,
+      size: gold ? rand(5,9) : rand(3.6,7.4),
+      r: gold ? 255 : 26 + Math.floor(20*bright),
+      g: gold ? 198 : 122 + Math.floor(88*bright),
+      b: gold ? 110 : 70 + Math.floor(40*bright),
+      a: (gold ? 0.42 : 0.18) + Math.random()*0.40,
+      tw: Math.random()*Math.PI*2, tws: rand(0.6,1.8)
     });
   }
-
-  /* 螺旋灯串：9 条 */
   var lines = 9, perLine = reduced ? 44 : 62;
-  for (var L = 0; L < lines; L++){
-    var phase = L * Math.PI * 2 / lines;
-    for (var k = 0; k < perLine; k++){
-      var t = k / (perLine - 1);
-      var hh = 0.04 + t * 0.93;
-      var ang = phase + t * Math.PI * 2.35;
-      var rad = coneRadius(hh) * 1.02;
+  for (var L=0;L<lines;L++){
+    var phase = L*Math.PI*2/lines;
+    for (var k=0;k<perLine;k++){
+      var t = k/(perLine-1), hh = 0.04 + t*0.93;
+      var ang = phase + t*Math.PI*2.35, rad = coneRadius(hh)*1.02;
       treeParts.push({
-        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
-        y: -TREE_H / 2 + TREE_H * (1 - hh),
-        size: rand(6, 10),
-        r: 255, g: 226, b: 158,
-        a: 0.80,
-        tw: (L / lines) * Math.PI * 4 + k * 0.28,
-        tws: 2.2,
-        lamp: true
+        x: Math.cos(ang)*rad, z: Math.sin(ang)*rad,
+        y: -TREE_H/2 + TREE_H*(1-hh),
+        size: rand(6,10), r:255, g:226, b:158, a:0.80,
+        tw: (L/lines)*Math.PI*4 + k*0.28, tws: 2.2, lamp: true
       });
     }
   }
-
-  /* 彩球 */
-  var palette = [
-    [255, 64, 96], [255, 205, 92], [88, 200, 255],
-    [255, 138, 208], [176, 255, 120], [255, 246, 220]
-  ];
-  for (var o = 0; o < (reduced ? 22 : 34); o++){
-    var h2 = rand(0.06, 0.9);
-    var a2 = Math.random() * Math.PI * 2;
-    var rad2 = coneRadius(h2) * 0.97;
-    var col = palette[Math.floor(Math.random() * palette.length)];
+  var palette = [[255,64,96],[255,205,92],[88,200,255],[255,138,208],[176,255,120],[255,246,220]];
+  for (var o=0;o<(reduced?22:34);o++){
+    var h2 = rand(0.06,0.9), a2 = Math.random()*Math.PI*2, rad2 = coneRadius(h2)*0.97;
+    var col = palette[Math.floor(Math.random()*palette.length)];
     ornament.push({
-      x: Math.cos(a2) * rad2, z: Math.sin(a2) * rad2,
-      y: -TREE_H / 2 + TREE_H * (1 - h2),
-      r: col[0], g: col[1], b: col[2],
-      size: rand(22, 40) * (0.75 + (1 - h2) * 0.55),
-      ph: Math.random() * Math.PI * 2,
-      sp: rand(0.8, 2.0)
+      x: Math.cos(a2)*rad2, z: Math.sin(a2)*rad2,
+      y: -TREE_H/2 + TREE_H*(1-h2),
+      r:col[0], g:col[1], b:col[2],
+      size: rand(22,40)*(0.75+(1-h2)*0.55),
+      ph: Math.random()*Math.PI*2, sp: rand(0.8,2.0)
     });
   }
 }
@@ -171,354 +192,250 @@ function buildTree(){
 function buildSnow(){
   snow.length = 0;
   var n = reduced ? 90 : 150;
-  for (var i = 0; i < n; i++){
-    snow.push({
-      x: rand(-620, 620), y: rand(-460, 460), z: rand(-420, 420),
-      size: rand(2.2, 5.5),
-      vy: rand(18, 46),
-      sw: Math.random() * Math.PI * 2,
-      sws: rand(0.5, 1.6),
-      a: rand(0.35, 0.9)
-    });
+  for (var i=0;i<n;i++){
+    snow.push({ x:rand(-620,620), y:rand(-460,460), z:rand(-420,420),
+      size: rand(2.2,5.5), vy: rand(18,46), sw: Math.random()*Math.PI*2,
+      sws: rand(0.5,1.6), a: rand(0.35,0.9) });
   }
 }
 
 function buildBackStars(){
   backStars.length = 0;
-  var n = 130;
-  for (var i = 0; i < n; i++){
-    backStars.push({
-      x: Math.random() * W,
-      y: Math.random() * H * 0.82,
-      s: rand(0.6, 2.0),
-      a: rand(0.15, 0.85),
-      tw: Math.random() * Math.PI * 2
-    });
+  for (var i=0;i<130;i++){
+    backStars.push({ x: Math.random()*W, y: Math.random()*H*0.82*0.82, s: rand(0.6,2.0),
+      a: rand(0.15,0.85), tw: Math.random()*Math.PI*2 });
   }
 }
 
-/* ---------- 交互 ---------- */
-var dragging = false, lastX = 0, lastY = 0, moved = 0, downT = 0;
-var vrot = 0;
-
-function onDown(e){
-  dragging = true; moved = 0; downT = performance.now();
-  lastX = e.clientX; lastY = e.clientY;
-}
-function onMove(e){
-  if (!dragging) return;
-  var dx = e.clientX - lastX, dy = e.clientY - lastY;
-  lastX = e.clientX; lastY = e.clientY;
-  moved += Math.abs(dx) + Math.abs(dy);
-  vrot = dx * 0.0009;
-  rotY += dx * 0.0055;
-  tilt += dy * 0.0015;
-  tilt = Math.max(-0.22, Math.min(0.42, tilt));
-}
-function onUp(e){
-  if (!dragging) return;
-  dragging = false;
-  if (moved < 14 && performance.now() - downT < 500) triggerBurst(e.clientX, e.clientY);
-}
-
-function triggerBurst(px, py){
-  pulse = 1;
-  hintEl.style.opacity = 0;
-  bursts.length = 0;
-  var n = reduced ? 60 : 110;
-  for (var i = 0; i < n; i++){
-    var a = Math.random() * Math.PI * 2;
-    var sp = rand(40, 210);
-    bursts.push({
-      x: CX + (Math.random() - 0.5) * 60,
-      y: CY - 20 + (Math.random() - 0.5) * 60,
-      vx: Math.cos(a) * sp,
-      vy: Math.sin(a) * sp - 60,
-      life: 1,
-      decay: rand(0.4, 0.9),
-      size: rand(3, 9),
-      r: 255, g: Math.random() < 0.5 ? 220 : 250, b: Math.random() < 0.4 ? 180 : 255
-    });
-  }
-}
-
-window.addEventListener('pointerdown', onDown);
-window.addEventListener('pointermove', onMove);
-window.addEventListener('pointerup', onUp);
-window.addEventListener('pointercancel', function(){ dragging = false; });
-window.addEventListener('wheel', function(e){
-  e.preventDefault();
-  targetZoom = Math.max(0.6, Math.min(2.2, targetZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
-}, { passive: false });
-
-/* ---------- 绘制工具 ---------- */
-var tmp = [];
-function project(x, y, z, cr, sr){
-  /* 绕 Y 轴旋转 */
-  var xr = x * cr - z * sr;
-  var zr = x * sr + z * cr;
-  /* 轻微绕 X 轴倾斜 */
+/* ---------- 投影 ---------- */
+function project(x,y,z,cr,sr){
+  var xr = x*cr - z*sr;
+  var zr = x*sr + z*cr;
   var ct = Math.cos(tilt), st = Math.sin(tilt);
-  var yr = y * ct - zr * st;
-  var z2 = y * st + zr * ct;
-  var p = FOCAL / (FOCAL + z2);
+  var yr = y*ct - zr*st;
+  var z2 = y*st + zr*ct;
+  var p = FOCAL/(FOCAL + z2);
   return {
-    sx: CX + xr * p * fitZoom * zoom + touchShiftX,
-    sy: CY + yr * p * fitZoom * zoom,
-    sc: p * fitZoom * zoom,
+    sx: CX + xr*p*fitZoom*zoom,
+    sy: CY + yr*p*fitZoom*zoom,
+    sc: p*fitZoom*zoom,
     depth: z2
   };
 }
 
-/* ---------- 主循环 ---------- */
-var t0 = performance.now();
-var time = 0;
-
-function frame(now){
-  var dt = Math.min(now - t0, 48);
-  t0 = now;
-  time += dt;
-
-  if (!dragging){
-    rotY += vrot;
-    vrot *= 0.9;
-    if (Math.abs(vrot) < 0.00002) vrot = 0;
-    rotY += rotV * dt;
-  }
-  zoom += (targetZoom - zoom) * 0.08;
-  tilt += (0.12 - tilt) * 0.02;
-  pulse *= 0.955;
-
-  var cr = Math.cos(rotY), sr = Math.sin(rotY);
-
-  /* --- 背景 --- */
-  var bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#02040b');
-  bg.addColorStop(0.45, '#050a1c');
-  bg.addColorStop(1, '#0a1024');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-
-  /* 中央光晕 */
-  ctx.globalCompositeOperation = 'lighter';
-  var halo = ctx.createRadialGradient(CX, CY + 40, 0, CX, CY + 40, Math.max(W, H) * 0.55);
-  halo.addColorStop(0, 'rgba(28,70,105,0.28)');
-  halo.addColorStop(0.45, 'rgba(12,30,55,0.12)');
-  halo.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = halo;
-  ctx.fillRect(0, 0, W, H);
-  ctx.globalCompositeOperation = 'source-over';
-
-  /* 背景星 */
-  ctx.globalCompositeOperation = 'lighter';
-  for (var i = 0; i < backStars.length; i++){
-    var s = backStars[i];
-    var tw = 0.6 + 0.4 * Math.sin(time * 0.0012 + s.tw);
-    ctx.globalAlpha = s.a * tw;
-    ctx.fillStyle = '#cfe3ff';
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.s, 0, 6.2832);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  /* --- 地面光晕 --- */
-  var gy = CY + TREE_H / 2 * fitZoom * zoom * 0.92;
-  var gr = ctx.createRadialGradient(CX, gy, 0, CX, gy, TREE_R * 2.1 * fitZoom * zoom);
-  gr.addColorStop(0, 'rgba(40,120,90,0.20)');
-  gr.addColorStop(0.5, 'rgba(20,70,60,0.08)');
-  gr.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gr;
-  ctx.save();
-  ctx.translate(CX, gy);
-  ctx.scale(1, 0.28);
-  ctx.translate(-CX, -gy);
-  ctx.fillRect(0, gy - TREE_R * 2.1 * fitZoom * zoom, W, TREE_R * 4.2 * fitZoom * zoom);
-  ctx.restore();
-
-  /* --- 雪花（远层） --- */
-  for (var si = 0; si < snow.length; si++){
-    var sn = snow[si];
-    sn.y += sn.vy * dt * 0.06;
-    sn.sw += sn.sws * dt * 0.001;
-    if (sn.y > 500){ sn.y = -480; sn.x = rand(-620, 620); sn.z = rand(-420, 420); }
-    var pp = project(sn.x + Math.sin(sn.sw) * 26, sn.y, sn.z, cr, sr);
-    var sz = Math.max(1, sn.size * pp.sc);
-    ctx.globalAlpha = sn.a * 0.42;
-    ctx.drawImage(makeGlow(232, 242, 255), pp.sx - sz * 1.2, pp.sy - sz * 1.2, sz * 2.4, sz * 2.4);
-  }
-
-  /* --- 树冠剪影 --- */
-  drawCanopy(cr, sr);
-
-  /* --- 排序后的树粒子 --- */
-  tmp.length = 0;
-  for (var pi = 0; pi < treeParts.length; pi++){
-    var tp = treeParts[pi];
-    var pr = project(tp.x, tp.y, tp.z, cr, sr);
-    tmp.push({
-      sx: pr.sx, sy: pr.sy, sc: pr.sc, depth: pr.depth,
-      size: tp.size, r: tp.r, g: tp.g, b: tp.b,
-      a: tp.a, tw: tp.tw, tws: tp.tws, lamp: tp.lamp
-    });
-  }
-  tmp.sort(function(A, B){ return A.depth - B.depth; });
-
-  for (var ti = 0; ti < tmp.length; ti++){
-    var q = tmp[ti];
-    var flick = q.lamp
-      ? 0.55 + 0.45 * Math.max(0, Math.sin(time * 0.0016 * q.tws + q.tw))
-      : 0.78 + 0.22 * Math.sin(time * 0.0011 * q.tws + q.tw);
-    /* 彩球/灯串深度遮挡感 */
-    var dep = 0.55 + 0.45 * (q.depth < 0 ? 1 : 0.78);
-    var al = q.a * flick * dep + pulse * 0.55;
-    al = Math.min(1, al);
-    var s2 = q.size * q.sc * (1 + pulse * 0.25);
-    ctx.globalAlpha = al;
-    ctx.drawImage(makeGlow(q.r, q.g, q.b), q.sx - s2 / 2, q.sy - s2 / 2, s2, s2);
-  }
-
-  /* --- 彩球 --- */
-  for (var oi = 0; oi < ornament.length; oi++){
-    var orn = ornament[oi];
-    var op = project(orn.x, orn.y, orn.z, cr, sr);
-    var flick2 = 0.62 + 0.38 * Math.sin(time * 0.0012 * orn.sp + orn.ph);
-    var os = orn.size * op.sc * (1 + pulse * 0.4);
-    ctx.globalAlpha = Math.min(1, 0.85 * flick2 + pulse * 0.4);
-    ctx.drawImage(makeGlow(orn.r, orn.g, orn.b), op.sx - os * 0.95, op.sy - os * 0.95, os * 1.9, os * 1.9);
-    ctx.globalAlpha = Math.min(1, 0.9 * flick2);
-    ctx.drawImage(makeGlow(255, 255, 255), op.sx - os * 0.14, op.sy - os * 0.16, os * 0.3, os * 0.3);
-  }
-
-  /* --- 顶星 --- */
-  var stp = project(0, -TREE_H / 2 - 34, 0, cr, sr);
-  var starPulse = 0.72 + 0.28 * Math.sin(time * 0.0022);
-  var starS = 120 * stp.sc * (1 + starPulse * 0.15 + pulse * 0.5);
-  ctx.globalAlpha = 0.55 * starPulse;
-  ctx.drawImage(makeGlow(255, 236, 170), stp.sx - starS, stp.sy - starS, starS * 2, starS * 2);
-  ctx.globalAlpha = 0.95;
-  drawStar(stp.sx, stp.sy, 26 * stp.sc * (1 + starPulse * 0.08), '#fff6d6');
-
-  /* 光芒 */
-  ctx.strokeStyle = 'rgba(255,240,190,0.55)';
-  ctx.lineWidth = 1.6;
-  ctx.globalAlpha = 0.35 + 0.4 * starPulse;
-  for (var ry = 0; ry < 4; ry++){
-    var ang2 = rotY * 0.6 + ry * Math.PI / 2;
-    var len = (60 + 22 * starPulse) * stp.sc;
-    ctx.beginPath();
-    ctx.moveTo(stp.sx - Math.cos(ang2) * len, stp.sy - Math.sin(ang2) * len);
-    ctx.lineTo(stp.sx + Math.cos(ang2) * len, stp.sy + Math.sin(ang2) * len);
-    ctx.stroke();
-  }
-
-  /* --- 爆发粒子 --- */
-  ctx.globalCompositeOperation = 'lighter';
-  for (var bi = bursts.length - 1; bi >= 0; bi--){
-    var bu = bursts[bi];
-    bu.life -= bu.decay * dt * 0.06;
-    if (bu.life <= 0){ bursts.splice(bi, 1); continue; }
-    bu.x += bu.vx * dt * 0.004;
-    bu.y += bu.vy * dt * 0.004;
-    bu.vy += 8 * dt * 0.004;
-    ctx.globalAlpha = bu.life;
-    var bs = bu.size * (1 + (1 - bu.life) * 1.4);
-    ctx.drawImage(makeGlow(bu.r, bu.g, bu.b), bu.x - bs, bu.y - bs, bs * 2, bs * 2);
-  }
-  ctx.globalAlpha = 1;
-
-  /* --- 祝福文字 --- */
-  drawTitle();
-
-  ctx.globalCompositeOperation = 'source-over';
-  requestAnimationFrame(frame);
+/* ---------- 照片挂件 ---------- */
+function addPhotoImage(img){
+  var n = photoItems.length;
+  photoItems.push({
+    img: img,
+    h: 0.16 + ((n * 0.135) % 0.68) + rand(-0.03, 0.03),
+    a: n * 2.399 + rand(-0.25, 0.25),
+    size: 48,
+    ph: Math.random()*Math.PI*2,
+    born: time,
+    sx: -999, sy: -999, r: 0
+  });
+  if (photoItems.length > 12) photoItems.shift();
 }
 
-var showMsg = 0;
-function drawTitle(){
-  var baseSize = Math.min(W * 1.05, H * 0.62);
-  var fs = Math.max(22, Math.min(baseSize * 0.082, 74));
-  var tx = CX + touchShiftX;
-  var treeBottom = CY + (TREE_H / 2) * fitZoom * zoom * 0.98;
-  var ty = Math.min(treeBottom + fs * 1.55, H * 0.845);
-  fs = Math.min(fs, (H * 0.845 - treeBottom) / 1.9);
-
-  var grad = ctx.createLinearGradient(tx - fs * 5, ty, tx + fs * 5, ty + fs * 0.5);
-  grad.addColorStop(0, '#c9a86a');
-  grad.addColorStop(0.35, '#ffeec7');
-  grad.addColorStop(0.6, '#fffaf0');
-  grad.addColorStop(1, '#d9b877');
-
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 ' + fs + 'px Georgia, "Songti SC", serif';
-  ctx.shadowColor = 'rgba(255,214,140,0.85)';
-  ctx.shadowBlur = 26 + 10 * Math.sin(time * 0.0015);
-  ctx.fillStyle = grad;
-  ctx.fillText('Merry Christmas', tx, ty);
-
-  var sub = Math.max(11, fs * 0.22);
-  ctx.font = '400 ' + sub + 'px Georgia, serif';
-  ctx.shadowBlur = 12;
-  ctx.shadowColor = 'rgba(255,200,140,0.6)';
-  ctx.fillStyle = 'rgba(226,208,175,0.75)';
-  ctx.fillText('2 0 2 6   ·   peace  &  light', tx, ty + fs * 1.15);
-  ctx.restore();
-
-  /* 点击后的祝福语 */
-  if (pulse > 0.35){
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, (pulse - 0.35) / 0.5);
-    ctx.textAlign = 'center';
-    ctx.font = '400 ' + Math.max(12, fs * 0.3) + 'px Georgia, "Songti SC", serif';
-    ctx.fillStyle = 'rgba(255,245,220,0.92)';
-    ctx.shadowColor = 'rgba(255,210,160,0.8)';
-    ctx.shadowBlur = 18;
-    ctx.fillText('愿灯火长明，愿你被温柔以待', tx, CY + (TREE_H / 2) * fitZoom * zoom * 0.92 + fs * 3.9);
-    ctx.restore();
+function loadFile(file, cb){
+  var url = URL.createObjectURL(file);
+  if (file.type.indexOf('video') === 0){
+    var v = document.createElement('video');
+    v.src = url; v.loop = true; v.muted = true; v.playsInline = true;
+    v.autoplay = true;
+    v.oncanplay = function(){
+      var pr = v.play(); if (pr && pr.catch) pr.catch(function(){});
+      cb({ video: v });
+    };
+    v.onerror = function(){ URL.revokeObjectURL(url); };
+  } else {
+    var im = new Image();
+    im.onload = function(){ cb({ img: im }); };
+    im.src = url;
   }
 }
 
+function setHead(file){
+  loadFile(file, function(res){
+    if (res.video){
+      if (avatar.video && avatar.video.src && avatar.video.src.indexOf('blob:') === 0) URL.revokeObjectURL(avatar.video.src);
+      avatar.video = res.video; avatar.img = null; avatar.mode = 'video';
+      avatar.playing = true;
+      var p = avatar.video.play(); if (p && p.catch) p.catch(function(){});
+    } else {
+      avatar.img = res.img; avatar.mode = 'photo';
+      if (avatar.video){ avatar.video.pause(); avatar.video = null; }
+    }
+    avatar.scale = 1; avatar.yaw = 0;
+  });
+}
+
+/* ---------- 上传交互 ---------- */
+var filePhoto = document.getElementById('filePhoto');
+var fileHead = document.getElementById('fileHead');
+document.getElementById('btnPhoto').onclick = function(){ filePhoto.click(); };
+document.getElementById('btnHead').onclick = function(){ fileHead.click(); };
+document.getElementById('btnClear').onclick = function(){ photoItems.length = 0; };
+
+filePhoto.onchange = function(){
+  var files = Array.prototype.slice.call(filePhoto.files || []);
+  files.forEach(function(f){
+    loadFile(f, function(res){ if (res.img) addPhotoImage(res.img); });
+  });
+  filePhoto.value = '';
+};
+fileHead.onchange = function(){
+  if (fileHead.files && fileHead.files[0]) setHead(fileHead.files[0]);
+  fileHead.value = '';
+};
+
+/* ---------- 图片预览 ---------- */
+var modal = document.getElementById('modal');
+var modalImg = document.getElementById('modalImg');
+document.getElementById('modalClose').onclick = function(){ modal.classList.remove('on'); };
+modal.onclick = function(e){ if (e.target === modal) modal.classList.remove('on'); };
+function showPreview(img){
+  modalImg.src = img.src;
+  modal.classList.add('on');
+}
+
+/* ---------- 手势 ---------- */
+var pointers = new Map();
+var dragMode = null;     /* scene | head */
+var tapInfo = null;
+var pinchStart = 0, pinchZoom0 = 1;
+var lastMove = 0;
+
+function pos(e){ return { x: e.clientX, y: e.clientY }; }
+
+function onDown(e){
+  canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, pos(e));
+  if (pointers.size === 1){
+    lastMove = 0;
+    var d = Math.hypot(e.clientX - headScreen.x, e.clientY - headScreen.y);
+    dragMode = (d < headScreen.r * 0.92) ? 'head' : 'scene';
+    tapInfo = { x: e.clientX, y: e.clientY, t: performance.now(), moved: 0, mode: dragMode };
+  }
+  if (pointers.size === 2){
+    var arr = Array.from(pointers.values());
+    pinchStart = Math.hypot(arr[0].x-arr[1].x, arr[0].y-arr[1].y);
+    pinchZoom0 = targetZoom;
+    dragMode = null;
+  }
+}
+
+function onMove(e){
+  if (!pointers.has(e.pointerId)) return;
+  var prev = pointers.get(e.pointerId);
+  var dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+  pointers.set(e.pointerId, pos(e));
+
+  if (pointers.size >= 2){
+    var arr = Array.from(pointers.values());
+    var dist = Math.hypot(arr[0].x-arr[1].x, arr[0].y-arr[1].y);
+    if (pinchStart > 10){
+      targetZoom = Math.max(0.6, Math.min(2.4, pinchZoom0 * dist / pinchStart));
+    }
+    if (tapInfo) tapInfo.moved += 999;
+    return;
+  }
+
+  if (tapInfo) tapInfo.moved += Math.abs(dx) + Math.abs(dy);
+
+  if (dragMode === 'head'){
+    avatar.spin += dx * 0.012;
+    avatar.yaw += dx * 0.010;
+    avatar.yaw = Math.max(-1.15, Math.min(1.15, avatar.yaw));
+  } else if (dragMode === 'scene'){
+    rotY += dx * 0.0055;
+    tilt = Math.max(-0.22, Math.min(0.42, tilt + dy*0.0015));
+  }
+}
+
+function onUp(e){
+  pointers.delete(e.pointerId);
+  if (pointers.size > 0) return;
+
+  if (tapInfo && tapInfo.moved < 14 && performance.now() - tapInfo.t < 600){
+    /* 点击照片挂件 -> 预览 */
+    var hit = null;
+    for (var i=0;i<photoItems.length;i++){
+      var it = photoItems[i];
+      if (Math.hypot(tapInfo.x-it.sx, tapInfo.y-it.sy) < Math.max(18, it.r*0.95)){ hit = it; break; }
+    }
+    if (hit){ showPreview(hit.img); }
+    else if (tapInfo.mode === 'head'){
+      if (avatar.mode === 'video' && avatar.video){
+        if (avatar.video.paused){ avatar.video.play(); avatar.playing = true; }
+        else { avatar.video.pause(); avatar.playing = false; }
+      }
+      pulse = Math.max(pulse, 0.5);
+    } else {
+      triggerBurst(e.clientX, e.clientY);
+    }
+  }
+  tapInfo = null; dragMode = null; pinchStart = 0;
+}
+
+canvas.addEventListener('pointerdown', onDown);
+canvas.addEventListener('pointermove', onMove);
+canvas.addEventListener('pointerup', onUp);
+canvas.addEventListener('pointercancel', function(e){ pointers.delete(e.pointerId); dragMode = null; tapInfo = null; });
+
+canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  targetZoom = Math.max(0.6, Math.min(2.4, targetZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+}, { passive:false });
+
+window.addEventListener('resize', resize);
+
+/* ---------- 爆发 ---------- */
+function triggerBurst(px, py){
+  pulse = 1;
+  document.getElementById('hint').style.opacity = 0;
+  bursts.length = 0;
+  var n = reduced ? 60 : 110;
+  for (var i=0;i<n;i++){
+    var a = Math.random()*Math.PI*2, sp = rand(40,210);
+    bursts.push({ x: CX+(Math.random()-0.5)*60, y: CY-20+(Math.random()-0.5)*60,
+      vx: Math.cos(a)*sp, vy: Math.sin(a)*sp-60, life:1, decay: rand(0.4,0.9),
+      size: rand(3,9), r:255, g: Math.random()<0.5?220:250, b: Math.random()<0.4?180:255 });
+  }
+}
+
+/* ---------- 绘制 ---------- */
 function drawCanopy(cr, sr){
   var LAYERS = 20;
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
-  for (var i = 0; i < LAYERS; i++){
-    var h0 = i / LAYERS, h1 = (i + 1) / LAYERS;
-    var y0 = -TREE_H / 2 + TREE_H * (1 - h0);
-    var y1 = -TREE_H / 2 + TREE_H * (1 - h1);
-    var r0 = coneRadius(h0) * 0.96;
-    var r1 = coneRadius(h1) * 0.96;
-
-    var yTop = project(0, y0, 0, cr, sr).sy;
-    var yBot = project(0, y1, 0, cr, sr).sy;
-
-    /* 采样环上的点，得到该层在屏幕上的左右边界 */
+  for (var i=0;i<LAYERS;i++){
+    var h0 = i/LAYERS, h1 = (i+1)/LAYERS;
+    var y0 = -TREE_H/2 + TREE_H*(1-h0);
+    var y1 = -TREE_H/2 + TREE_H*(1-h1);
+    var r0 = coneRadius(h0)*0.96, r1 = coneRadius(h1)*0.96;
+    var yTop = project(0,y0,0,cr,sr).sy, yBot = project(0,y1,0,cr,sr).sy;
     var min0 = 1e9, max0 = -1e9, min1 = 1e9, max1 = -1e9;
-    for (var k = 0; k < 8; k++){
-      var th = k / 8 * Math.PI * 2;
-      var p0 = project(Math.cos(th) * r0, y0, Math.sin(th) * r0, cr, sr);
-      var p1 = project(Math.cos(th) * r1, y1, Math.sin(th) * r1, cr, sr);
-      if (p0.sx < min0) min0 = p0.sx; if (p0.sx > max0) max0 = p0.sx;
-      if (p1.sx < min1) min1 = p1.sx; if (p1.sx > max1) max1 = p1.sx;
+    for (var k=0;k<8;k++){
+      var th = k/8*Math.PI*2;
+      var p0 = project(Math.cos(th)*r0, y0, Math.sin(th)*r0, cr, sr);
+      var p1 = project(Math.cos(th)*r1, y1, Math.sin(th)*r1, cr, sr);
+      if (p0.sx<min0) min0=p0.sx; if (p0.sx>max0) max0=p0.sx;
+      if (p1.sx<min1) min1=p1.sx; if (p1.sx>max1) max1=p1.sx;
     }
-
-    var alpha = 0.55 + 0.35 * (i / LAYERS);
-    var g = ctx.createLinearGradient(0, yTop, 0, yBot);
-    g.addColorStop(0, 'rgba(9,48,34,' + (alpha * 0.85) + ')');
-    g.addColorStop(0.55, 'rgba(6,36,27,' + alpha + ')');
-    g.addColorStop(1, 'rgba(3,22,18,' + (alpha * 0.9) + ')');
+    var alpha = 0.55 + 0.35*(i/LAYERS);
+    var g = ctx.createLinearGradient(0,yTop,0,yBot);
+    g.addColorStop(0,'rgba(9,48,34,'+(alpha*0.85)+')');
+    g.addColorStop(0.55,'rgba(6,36,27,'+alpha+')');
+    g.addColorStop(1,'rgba(3,22,18,'+(alpha*0.9)+')');
     ctx.fillStyle = g;
-
-    var mx = (min0 + max0 + min1 + max1) / 4;
     ctx.beginPath();
-    ctx.moveTo(min0 + (max0 - min0) * 0.18, yTop + 1);
-    ctx.lineTo(max0 - (max0 - min0) * 0.18, yTop + 1);
-    ctx.lineTo(max1 + 3, yBot + 1);
-    ctx.lineTo(min1 - 3, yBot + 1);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(min0 + (max0-min0)*0.18, yTop+1);
+    ctx.lineTo(max0 - (max0-min0)*0.18, yTop+1);
+    ctx.lineTo(max1+3, yBot+1);
+    ctx.lineTo(min1-3, yBot+1);
+    ctx.closePath(); ctx.fill();
   }
   ctx.restore();
 }
@@ -526,12 +443,11 @@ function drawCanopy(cr, sr){
 function drawStar(cx, cy, R, color){
   ctx.save();
   ctx.beginPath();
-  for (var i = 0; i < 10; i++){
-    var rr = (i % 2 === 0) ? R : R * 0.42;
-    var a = -Math.PI / 2 + i * Math.PI / 5;
-    var x = cx + Math.cos(a) * rr;
-    var y = cy + Math.sin(a) * rr;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  for (var i=0;i<10;i++){
+    var rr = (i%2===0)? R : R*0.42;
+    var a = -Math.PI/2 + i*Math.PI/5;
+    var x = cx + Math.cos(a)*rr, y = cy + Math.sin(a)*rr;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
   }
   ctx.closePath();
   ctx.fillStyle = color;
@@ -541,17 +457,319 @@ function drawStar(cx, cy, R, color){
   ctx.restore();
 }
 
+/* 头像 / 视频 */
+function drawHead(){
+  var hp = project(0, HEAD_Y, 0, 0, 0);
+  var R = HEAD_R * hp.sc * avatar.scale;
+  headScreen.x = hp.sx; headScreen.y = hp.sy; headScreen.r = R;
+
+  var R0 = HEAD_R * hp.sc * avatar.scale * 1.55;
+
+  /* 光晕 */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.85 + pulse*0.15;
+  ctx.drawImage(makeGlow(255,214,150), hp.sx-R0, hp.sy-R0, R0*2, R0*2);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.save();
+  ctx.translate(hp.sx, hp.sy);
+  ctx.rotate(avatar.spin);
+  var ya = Math.cos(avatar.yaw);
+  ctx.scale(Math.max(0.25, Math.abs(ya)), 1);
+
+  /* 内圈暗底 */
+  ctx.beginPath(); ctx.arc(0,0,R,0,Math.PI*2);
+  ctx.fillStyle = 'rgba(4,10,18,0.92)'; ctx.fill();
+
+  /* 内容 */
+  var ready = false;
+  if (avatar.mode === 'video' && avatar.video && avatar.video.readyState >= 2){
+    ready = true;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0,0,R*0.94,0,Math.PI*2); ctx.clip();
+    var vw = avatar.video.videoWidth, vh = avatar.video.videoHeight;
+    var s = Math.max((R*2)/vw, (R*2)/vh);
+    ctx.drawImage(avatar.video, -(vw*s)/2, -(vh*s)/2, vw*s, vh*s);
+    ctx.restore();
+  } else if (avatar.mode === 'photo' && avatar.img){
+    ready = true;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0,0,R*0.94,0,Math.PI*2); ctx.clip();
+    var iw = avatar.img.width, ih = avatar.img.height;
+    var s2 = Math.max((R*2)/iw, (R*2)/ih);
+    ctx.drawImage(avatar.img, -(iw*s2)/2, -(ih*s2)/2, iw*s2, ih*s2);
+    ctx.restore();
+  }
+
+  if (!ready){
+    /* 占位：虚线环 + 人形 */
+    ctx.strokeStyle = 'rgba(255,224,168,0.55)';
+    ctx.lineWidth = Math.max(1, R*0.02);
+    ctx.setLineDash([R*0.14, R*0.12]);
+    ctx.beginPath(); ctx.arc(0,0,R*0.9,0,Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,228,180,0.55)';
+    ctx.beginPath(); ctx.arc(0,-R*0.16,R*0.24,0,Math.PI*2); ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(0, R*0.45, R*0.44, R*0.32, 0, Math.PI, Math.PI*2);
+    ctx.fill();
+  }
+
+  /* 金色外环 */
+  var ring = ctx.createLinearGradient(-R,-R,R,R);
+  ring.addColorStop(0,'rgba(255,236,190,0.95)');
+  ring.addColorStop(0.4,'rgba(255,205,120,0.85)');
+  ring.addColorStop(1,'rgba(212,164,84,0.9)');
+  ctx.strokeStyle = ring;
+  ctx.lineWidth = Math.max(1.5, R*0.055);
+  ctx.beginPath(); ctx.arc(0,0,R*0.96,0,Math.PI*2); ctx.stroke();
+
+  /* 上下小挂扣 */
+  ctx.fillStyle = 'rgba(255,228,170,0.9)';
+  ctx.beginPath(); ctx.arc(0,-R*0.96,R*0.055,0,Math.PI*2); ctx.fill();
+
+  /* 暂停标记 */
+  if (avatar.mode === 'video' && avatar.video && avatar.video.paused){
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    var b = R*0.09;
+    ctx.fillRect(-b*2.2, -b*2.6, b, b*5.2);
+    ctx.fillRect(b*1.2, -b*2.6, b, b*5.2);
+  }
+
+  ctx.restore();
+}
+
+/* 吊挂线 */
+function drawString(x1,y1,x2,y2,alpha){
+  ctx.strokeStyle = 'rgba(255,224,170,'+alpha+')';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+}
+
+function drawPhotos(cr, sr){
+  for (var i=0;i<photoItems.length;i++){
+    var it = photoItems[i];
+    var h = it.h;
+    var rad = coneRadius(h)*1.03;
+    var y = -TREE_H/2 + TREE_H*(1-h);
+    var x = Math.cos(it.a)*rad, z = Math.sin(it.a)*rad;
+
+    var p = project(x,y,z,cr,sr);
+    var anchor = project(x, y - 70, z, cr, sr);
+    var pop = Math.min(1, (time - it.born)/700);
+    var R = it.size * p.sc * (0.8 + 0.2*pop);
+    var dep = p.depth < 0 ? 1 : 0.72;
+    var sway = Math.sin(time*0.0012 + it.ph) * 0.03;
+    var sx = p.sx + Math.sin(sway)*R*0.3;
+
+    it.sx = sx; it.sy = p.sy; it.r = R;
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.55*dep;
+
+    /* 挂线 */
+    drawString(anchor.sx, anchor.sy, sx, p.sy - R, 0.45*dep);
+
+    /* 光晕 */
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.55*dep;
+    ctx.drawImage(makeGlow(255,220,170), sx-R*1.5, p.sy-R*1.5, R*3, R*3);
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = pop*dep;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(sx, p.sy, R, 0, Math.PI*2); ctx.clip();
+    var iw = it.img.width, ih = it.img.height;
+    var s = Math.max((R*2)/iw, (R*2)/ih);
+    ctx.drawImage(it.img, sx-(iw*s)/2, p.sy-(ih*s)/2, iw*s, ih*s);
+    ctx.restore();
+
+    /* 金色圈 */
+    ctx.globalAlpha = dep;
+    ctx.strokeStyle = 'rgba(255,226,170,0.85)';
+    ctx.lineWidth = Math.max(1, R*0.07);
+    ctx.beginPath(); ctx.arc(sx, p.sy, R*0.96, 0, Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* 标题 */
+function drawTitle(){
+  var base = Math.min(W*1.05, H*0.62);
+  var fs = Math.max(20, Math.min(base*0.080, 68));
+  var treeBottom = CY + (TREE_H/2)*fitZoom*zoom*0.98;
+  var ty = Math.min(treeBottom + fs*1.45, H*0.855);
+  fs = Math.min(fs, Math.max(18, (H*0.855 - treeBottom)/1.9));
+
+  var grad = ctx.createLinearGradient(CX-fs*5, ty, CX+fs*5, ty+fs*0.5);
+  grad.addColorStop(0,'#c9a86a');
+  grad.addColorStop(0.35,'#ffeec7');
+  grad.addColorStop(0.6,'#fffaf0');
+  grad.addColorStop(1,'#d9b877');
+
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '600 '+fs+'px Georgia, "Songti SC", serif';
+  ctx.shadowColor = 'rgba(255,214,140,0.85)';
+  ctx.shadowBlur = 26 + 10*Math.sin(time*0.0015);
+  ctx.fillStyle = grad;
+  ctx.fillText('Merry Christmas', CX, ty);
+
+  var sub = Math.max(11, fs*0.22);
+  ctx.font = '400 '+sub+'px Georgia, serif';
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = 'rgba(255,200,140,0.6)';
+  ctx.fillStyle = 'rgba(226,208,175,0.75)';
+  ctx.fillText('2 0 2 6   ·   peace  &  light', CX, ty + fs*1.1);
+  ctx.restore();
+}
+
+/* ---------- 主循环 ---------- */
+var t0 = performance.now();
+var tmp = [];
+
+function frame(now){
+  var dt = Math.min(now - t0, 48); t0 = now; time += dt;
+
+  if (dragMode !== 'head') rotY += rotV * dt;
+  zoom += (targetZoom - zoom) * 0.08;
+  tilt += (0.12 - tilt) * 0.02;
+  pulse *= 0.955;
+
+  var cr = Math.cos(rotY), sr = Math.sin(rotY);
+
+  /* 背景 */
+  var bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#02040b'); bg.addColorStop(0.45,'#050a1c'); bg.addColorStop(1,'#0a1024');
+  ctx.fillStyle = bg; ctx.fillRect(0,0,W,H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  var halo = ctx.createRadialGradient(CX, CY+40, 0, CX, CY+40, Math.max(W,H)*0.55);
+  halo.addColorStop(0,'rgba(28,70,105,0.28)');
+  halo.addColorStop(0.45,'rgba(12,30,55,0.12)');
+  halo.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = halo; ctx.fillRect(0,0,W,H);
+
+  for (var i=0;i<backStars.length;i++){
+    var s = backStars[i];
+    ctx.globalAlpha = s.a * (0.6 + 0.4*Math.sin(time*0.0012 + s.tw));
+    ctx.fillStyle = '#cfe3ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.s, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  /* 地面光 */
+  var gy = CY + (TREE_H/2)*fitZoom*zoom*0.92;
+  var gr = ctx.createRadialGradient(CX,gy,0,CX,gy,TREE_R*2.1*fitZoom*zoom);
+  gr.addColorStop(0,'rgba(40,120,90,0.20)');
+  gr.addColorStop(0.5,'rgba(20,70,60,0.08)');
+  gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = gr;
+  ctx.save(); ctx.translate(CX,gy); ctx.scale(1,0.28); ctx.translate(-CX,-gy);
+  ctx.fillRect(0, gy-TREE_R*2.1*fitZoom*zoom, W, TREE_R*4.2*fitZoom*zoom);
+  ctx.restore();
+
+  /* 雪 */
+  for (var si=0;si<snow.length;si++){
+    var sn = snow[si];
+    sn.y += sn.vy*dt*0.06; sn.sw += sn.sws*dt*0.001;
+    if (sn.y > 500){ sn.y = -480; sn.x = rand(-620,620); sn.z = rand(-420,420); }
+    var pp = project(sn.x + Math.sin(sn.sw)*26, sn.y, sn.z, cr, sr);
+    var sz = Math.max(1, sn.size*pp.sc);
+    ctx.globalAlpha = sn.a*0.42;
+    ctx.drawImage(makeGlow(232,242,255), pp.sx-sz*1.2, pp.sy-sz*1.2, sz*2.4, sz*2.4);
+  }
+
+  /* 树冠 */
+  drawCanopy(cr, sr);
+
+  /* 粒子 */
+  tmp.length = 0;
+  for (var pi=0;pi<treeParts.length;pi++){
+    var tp = treeParts[pi];
+    var pr = project(tp.x, tp.y, tp.z, cr, sr);
+    tmp.push({ sx:pr.sx, sy:pr.sy, sc:pr.sc, depth:pr.depth, size:tp.size,
+      r:tp.r, g:tp.g, b:tp.b, a:tp.a, tw:tp.tw, tws:tp.tws, lamp:tp.lamp });
+  }
+  tmp.sort(function(A,B){ return A.depth-B.depth; });
+
+  for (var ti=0;ti<tmp.length;ti++){
+    var q = tmp[ti];
+    var flick = q.lamp
+      ? 0.55 + 0.45*Math.max(0, Math.sin(time*0.0016*q.tws + q.tw))
+      : 0.78 + 0.22*Math.sin(time*0.0011*q.tws + q.tw);
+    var dep = 0.55 + 0.45*(q.depth < 0 ? 1 : 0.78);
+    var al = Math.min(1, q.a*flick*dep + pulse*0.55);
+    var s2 = q.size*q.sc*(1 + pulse*0.25);
+    ctx.globalAlpha = al;
+    ctx.drawImage(makeGlow(q.r,q.g,q.b), q.sx-s2/2, q.sy-s2/2, s2, s2);
+  }
+
+  /* 彩球 */
+  for (var oi=0;oi<ornament.length;oi++){
+    var orn = ornament[oi];
+    var op = project(orn.x, orn.y, orn.z, cr, sr);
+    var f2 = 0.62 + 0.38*Math.sin(time*0.0012*orn.sp + orn.ph);
+    var os = orn.size*op.sc*(1+pulse*0.4);
+    ctx.globalAlpha = Math.min(1, 0.85*f2 + pulse*0.4);
+    ctx.drawImage(makeGlow(orn.r,orn.g,orn.b), op.sx-os*0.95, op.sy-os*0.95, os*1.9, os*1.9);
+    ctx.globalAlpha = Math.min(1, 0.9*f2);
+    ctx.drawImage(makeGlow(255,255,255), op.sx-os*0.14, op.sy-os*0.16, os*0.3, os*0.3);
+  }
+
+  /* 照片挂件 */
+  drawPhotos(cr, sr);
+
+  /* 顶星 */
+  var stp = project(0, -TREE_H/2-34, 0, cr, sr);
+  var starPulse = 0.72 + 0.28*Math.sin(time*0.0022);
+  var starS = 110*stp.sc*(1+starPulse*0.15+pulse*0.5);
+  ctx.globalAlpha = 0.5*starPulse;
+  ctx.drawImage(makeGlow(255,236,170), stp.sx-starS, stp.sy-starS, starS*2, starS*2);
+  ctx.globalAlpha = 0.95;
+  drawStar(stp.sx, stp.sy, 24*stp.sc*(1+starPulse*0.08), '#fff6d6');
+
+  ctx.strokeStyle = 'rgba(255,240,190,0.55)';
+  ctx.lineWidth = 1.6; ctx.globalAlpha = 0.3 + 0.4*starPulse;
+  for (var ry=0;ry<4;ry++){
+    var ang2 = rotY*0.6 + ry*Math.PI/2;
+    var len = (54+20*starPulse)*stp.sc;
+    ctx.beginPath();
+    ctx.moveTo(stp.sx-Math.cos(ang2)*len, stp.sy-Math.sin(ang2)*len);
+    ctx.lineTo(stp.sx+Math.cos(ang2)*len, stp.sy+Math.sin(ang2)*len);
+    ctx.stroke();
+  }
+
+  /* 头像 */
+  drawHead();
+
+  /* 爆发 */
+  ctx.globalCompositeOperation = 'lighter';
+  for (var bi=bursts.length-1;bi>=0;bi--){
+    var bu = bursts[bi];
+    bu.life -= bu.decay*dt*0.06;
+    if (bu.life <= 0){ bursts.splice(bi,1); continue; }
+    bu.x += bu.vx*dt*0.004; bu.y += bu.vy*dt*0.004; bu.vy += 8*dt*0.004;
+    ctx.globalAlpha = bu.life;
+    var bs = bu.size*(1+(1-bu.life)*1.4);
+    ctx.drawImage(makeGlow(bu.r,bu.g,bu.b), bu.x-bs, bu.y-bs, bs*2, bs*2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  drawTitle();
+
+  requestAnimationFrame(frame);
+}
+
 /* ---------- 启动 ---------- */
-window.addEventListener('resize', function(){
-  resize();
-});
 resize();
 buildTree();
 buildSnow();
 requestAnimationFrame(frame);
 
-/* 8 秒后弱化提示 */
-setTimeout(function(){ hintEl.style.opacity = 0.35; }, 8000);
+setTimeout(function(){ document.getElementById('hint').style.opacity = 0.35; }, 9000);
 
 })();
 </script>
