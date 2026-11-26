@@ -359,15 +359,32 @@ function syncPhotos(){
 
 /* 把图片压成缩略 dataURL，便于存本地 */
 function thumb(img, max, q){
-  var w = img.width, h = img.height;
+  var w = img.naturalWidth || img.width;
+  var h = img.naturalHeight || img.height;
   if (!w || !h) return null;
   var s = Math.min(1, max / Math.max(w, h));
   var cv = document.createElement('canvas');
   cv.width = Math.round(w * s);
   cv.height = Math.round(h * s);
   var c2 = cv.getContext('2d');
-  c2.drawImage(img, 0, 0, cv.width, cv.height);
-  try { return cv.toDataURL('image/jpeg', q || 0.82); } catch (e) { return null; }
+  try { c2.drawImage(img, 0, 0, cv.width, cv.height); } catch (e) { return null; }
+  try { return cv.toDataURL('image/jpeg', q || 0.82); } catch (e) {}
+  try { return cv.toDataURL('image/png'); } catch (e) {}
+  return null;
+}
+
+/* 导出/保存前兜底：确保每一张挂件都有可打包的数据 */
+function ensurePhotoData(){
+  var missing = 0;
+  for (var i = 0; i < photoItems.length; i++){
+    var it = photoItems[i];
+    if (!it.data && it.img){
+      it.data = thumb(it.img, 620, 0.82);
+    }
+    if (!it.data) missing++;
+  }
+  syncPhotos();
+  return missing;
 }
 
 function frameThumb(video, max, q){
@@ -430,13 +447,13 @@ document.getElementById('btnSave').onclick = function(){
 };
 
 document.getElementById('btnSaveOrn').onclick = function(){
-  syncPhotos();
+  var miss = ensurePhotoData();
   if (avatar.mode === 'photo' && avatar.img){
     var d = thumb(avatar.img, 900, 0.85);
     if (d){ saved.head = { type: 'photo', d: d }; saveStore(); }
   }
   saveStore();
-  toast('挂件与头像已保存到本机');
+  toast(miss ? ('已保存，另有 ' + miss + ' 张无法编码') : ('挂件与头像已保存到本机'));
 };
 
 /* 生成导出用的数据：头像优先用视频原文件，过大时退回当前画面 */
@@ -463,14 +480,14 @@ function buildHeadForExport(cb){
 document.getElementById('btnExport').onclick = function(){
   buildHeadForExport(function(head){
     try {
-      syncPhotos();
+      var miss = ensurePhotoData();
       var data = { photos: saved.photos, head: head };
       var json = JSON.stringify(data).replace(/</g, '\\u003c');
       var src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
       var block = '<script id="savedData">window.__SAVED=' + json + ';<\/script>';
       var out = src.replace(/<script id="savedData">[\s\S]*?<\/script>/, function(){ return block; });
       downloadBlob(new Blob([out], { type: 'text/html;charset=utf-8' }), 'christmas-tree.html');
-      toast('已导出网页：' + saved.photos.length + ' 个照片挂件 + 头像');
+      toast('已导出：' + saved.photos.length + ' 个照片挂件' + (head ? ' + 头像' : '') + (miss ? '（' + miss + ' 张无法打包）' : ''));
     } catch (e) {
       toast('导出失败');
     }
