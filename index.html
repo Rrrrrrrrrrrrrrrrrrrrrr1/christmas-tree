@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Merry Christmas · christmas-tree-v17.6</title>
+<meta name="description" content="A particle Christmas tree — drag to rotate, scroll to zoom.">
+<style>
+  html,body{
+    margin:0;height:100%;background:#03050d;overflow:hidden;
+    font-family:Georgia,"Songti SC","Times New Roman",serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab}
+  canvas:active{cursor:grabbing}
+  .hint{
+    position:fixed;left:0;right:0;bottom:16px;text-align:center;
+    color:#6f7a92;font-size:12px;letter-spacing:.14em;pointer-events:none;
+    opacity:.7;transition:opacity .6s;user-select:none;
+  }
+  .tag{
+    position:fixed;right:14px;top:12px;color:#55607a;font-size:11px;
+    letter-spacing:.1em;pointer-events:none;user-select:none;opacity:.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint" id="hint">拖动旋转 · 滚轮缩放 · 点击点亮</div>
+<div class="tag">v17.6</div>
+<script>
+(function(){
+'use strict';
+
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var DPR = Math.min(window.devicePixelRatio || 1, 2);
+var W = 0, H = 0, CX = 0, CY = 0;
+
+/* ---------- 尺寸 ---------- */
+function resize(){
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  CX = W / 2;
+  CY = H * 0.44;
+  fitZoom = Math.min(W * 0.62 / (TREE_R * 2), H * 0.66 / TREE_H);
+  buildBackStars();
+}
+var fitZoom = 1;
+
+/* ---------- 光晕贴图缓存 ---------- */
+var glowCache = {};
+function makeGlow(r, g, b){
+  var key = r + '_' + g + '_' + b;
+  if (glowCache[key]) return glowCache[key];
+  var size = 64;
+  var cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  var c2 = cv.getContext('2d');
+  var rg = c2.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  rg.addColorStop(0.00, 'rgba(255,255,255,0.95)');
+  rg.addColorStop(0.12, 'rgba(' + r + ',' + g + ',' + b + ',1)');
+  rg.addColorStop(0.30, 'rgba(' + r + ',' + g + ',' + b + ',0.72)');
+  rg.addColorStop(0.58, 'rgba(' + r + ',' + g + ',' + b + ',0.22)');
+  rg.addColorStop(1.00, 'rgba(' + r + ',' + g + ',' + b + ',0)');
+  c2.fillStyle = rg;
+  c2.fillRect(0, 0, size, size);
+  glowCache[key] = cv;
+  return cv;
+}
+
+/* ---------- 常量与场景数据 ---------- */
+var TREE_H = 640;          /* 树高（世界单位） */
+var TREE_R = 236;          /* 底部半径 */
+var FOCAL  = 1250;         /* 透视焦距 */
+
+var treeParts = [];        /* 针叶 / 暖光粒子 */
+var ornament = [];         /* 彩球 */
+var snow = [];             /* 雪花 */
+var bursts = [];           /* 点击爆发的光点 */
+var backStars = [];        /* 背景星点 */
+
+var rotY = 0.4;            /* 当前旋转角 */
+var rotV = 0.00035;        /* 自动旋转速度 rad/ms */
+var zoom = 1;
+var targetZoom = 1;
+var tilt = 0.12;           /* 轻微俯视角 */
+var touchShiftX = 0;
+
+var pulse = 0;             /* 点击后的全局脉冲 0..1 */
+var hintEl = document.getElementById('hint');
+
+var reduced = W < 620;     /* 小屏降级 */
+
+function rand(a, b){ return a + Math.random() * (b - a); }
+
+/* 圆锥：h=0 底部 -> 1 顶部 */
+function coneRadius(h){ return TREE_R * Math.pow(1 - h, 1.12); }
+
+function buildTree(){
+  treeParts.length = 0;
+  ornament.length = 0;
+
+  var foliage = reduced ? 1300 : 2100;
+  for (var i = 0; i < foliage; i++){
+    var h = Math.pow(Math.random(), 0.62);           /* 底部更密 */
+    var rr = coneRadius(h) * (0.62 + Math.random() * 0.42);
+    var a = Math.random() * Math.PI * 2;
+    var y = -TREE_H / 2 + TREE_H * (1 - h);
+    var gold = Math.random() < 0.10;
+    var bright = 0.35 + Math.random() * 0.65;
+    treeParts.push({
+      x: Math.cos(a) * rr, z: Math.sin(a) * rr, y: y,
+      size: gold ? rand(5, 9) : rand(3.6, 7.4),
+      r: gold ? 255 : 26 + Math.floor(20 * bright),
+      g: gold ? 198 : 120 + Math.floor(90 * bright),
+      b: gold ? 110 : 70 + Math.floor(40 * bright),
+      a: (gold ? 0.42 : 0.18) + Math.random() * 0.40,
+      tw: Math.random() * Math.PI * 2,
+      tws: rand(0.6, 1.8)
+    });
+  }
+
+  /* 螺旋灯串：9 条 */
+  var lines = 9, perLine = reduced ? 44 : 62;
+  for (var L = 0; L < lines; L++){
+    var phase = L * Math.PI * 2 / lines;
+    for (var k = 0; k < perLine; k++){
+      var t = k / (perLine - 1);
+      var hh = 0.04 + t * 0.93;
+      var ang = phase + t * Math.PI * 2.35;
+      var rad = coneRadius(hh) * 1.02;
+      treeParts.push({
+        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+        y: -TREE_H / 2 + TREE_H * (1 - hh),
+        size: rand(6, 10),
+        r: 255, g: 226, b: 158,
+        a: 0.80,
+        tw: (L / lines) * Math.PI * 4 + k * 0.28,
+        tws: 2.2,
+        lamp: true
+      });
+    }
+  }
+
+  /* 彩球 */
+  var palette = [
+    [255, 64, 96], [255, 205, 92], [88, 200, 255],
+    [255, 138, 208], [176, 255, 120], [255, 246, 220]
+  ];
+  for (var o = 0; o < (reduced ? 22 : 34); o++){
+    var h2 = rand(0.06, 0.9);
+    var a2 = Math.random() * Math.PI * 2;
+    var rad2 = coneRadius(h2) * 0.97;
+    var col = palette[Math.floor(Math.random() * palette.length)];
+    ornament.push({
+      x: Math.cos(a2) * rad2, z: Math.sin(a2) * rad2,
+      y: -TREE_H / 2 + TREE_H * (1 - h2),
+      r: col[0], g: col[1], b: col[2],
+      size: rand(22, 40) * (0.75 + (1 - h2) * 0.55),
+      ph: Math.random() * Math.PI * 2,
+      sp: rand(0.8, 2.0)
+    });
+  }
+}
+
+function buildSnow(){
+  snow.length = 0;
+  var n = reduced ? 90 : 150;
+  for (var i = 0; i < n; i++){
+    snow.push({
+      x: rand(-620, 620), y: rand(-460, 460), z: rand(-420, 420),
+      size: rand(2.2, 5.5),
+      vy: rand(18, 46),
+      sw: Math.random() * Math.PI * 2,
+      sws: rand(0.5, 1.6),
+      a: rand(0.35, 0.9)
+    });
+  }
+}
+
+function buildBackStars(){
+  backStars.length = 0;
+  var n = 130;
+  for (var i = 0; i < n; i++){
+    backStars.push({
+      x: Math.random() * W,
+      y: Math.random() * H * 0.82,
+      s: rand(0.6, 2.0),
+      a: rand(0.15, 0.85),
+      tw: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+/* ---------- 交互 ---------- */
+var dragging = false, lastX = 0, lastY = 0, moved = 0, downT = 0;
+var vrot = 0;
+
+function onDown(e){
+  dragging = true; moved = 0; downT = performance.now();
+  lastX = e.clientX; lastY = e.clientY;
+}
+function onMove(e){
+  if (!dragging) return;
+  var dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  moved += Math.abs(dx) + Math.abs(dy);
+  vrot = dx * 0.0009;
+  rotY += dx * 0.0055;
+  tilt += dy * 0.0015;
+  tilt = Math.max(-0.22, Math.min(0.42, tilt));
+}
+function onUp(e){
+  if (!dragging) return;
+  dragging = false;
+  if (moved < 14 && performance.now() - downT < 500) triggerBurst(e.clientX, e.clientY);
+}
+
+function triggerBurst(px, py){
+  pulse = 1;
+  hintEl.style.opacity = 0;
+  bursts.length = 0;
+  var n = reduced ? 60 : 110;
+  for (var i = 0; i < n; i++){
+    var a = Math.random() * Math.PI * 2;
+    var sp = rand(40, 210);
+    bursts.push({
+      x: CX + (Math.random() - 0.5) * 60,
+      y: CY - 20 + (Math.random() - 0.5) * 60,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 60,
+      life: 1,
+      decay: rand(0.4, 0.9),
+      size: rand(3, 9),
+      r: 255, g: Math.random() < 0.5 ? 220 : 250, b: Math.random() < 0.4 ? 180 : 255
+    });
+  }
+}
+
+window.addEventListener('pointerdown', onDown);
+window.addEventListener('pointermove', onMove);
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', function(){ dragging = false; });
+window.addEventListener('wheel', function(e){
+  e.preventDefault();
+  targetZoom = Math.max(0.6, Math.min(2.2, targetZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+}, { passive: false });
+
+/* ---------- 绘制工具 ---------- */
+var tmp = [];
+function project(x, y, z, cr, sr){
+  /* 绕 Y 轴旋转 */
+  var xr = x * cr - z * sr;
+  var zr = x * sr + z * cr;
+  /* 轻微绕 X 轴倾斜 */
+  var ct = Math.cos(tilt), st = Math.sin(tilt);
+  var yr = y * ct - zr * st;
+  var z2 = y * st + zr * ct;
+  var p = FOCAL / (FOCAL + z2);
+  return {
+    sx: CX + xr * p * fitZoom * zoom + touchShiftX,
+    sy: CY + yr * p * fitZoom * zoom,
+    sc: p * fitZoom * zoom,
+    depth: z2
+  };
+}
+
+/* ---------- 主循环 ---------- */
+var t0 = performance.now();
+var time = 0;
+
+function frame(now){
+  var dt = Math.min(now - t0, 48);
+  t0 = now;
+  time += dt;
+
+  if (!dragging){
+    rotY += vrot;
+    vrot *= 0.9;
+    if (Math.abs(vrot) < 0.00002) vrot = 0;
+    rotY += rotV * dt;
+  }
+  zoom += (targetZoom - zoom) * 0.08;
+  tilt += (0.12 - tilt) * 0.02;
+  pulse *= 0.955;
+
+  var cr = Math.cos(rotY), sr = Math.sin(rotY);
+
+  /* --- 背景 --- */
+  var bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#02040b');
+  bg.addColorStop(0.45, '#050a1c');
+  bg.addColorStop(1, '#0a1024');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 中央光晕 */
+  ctx.globalCompositeOperation = 'lighter';
+  var halo = ctx.createRadialGradient(CX, CY + 40, 0, CX, CY + 40, Math.max(W, H) * 0.55);
+  halo.addColorStop(0, 'rgba(28,70,105,0.28)');
+  halo.addColorStop(0.45, 'rgba(12,30,55,0.12)');
+  halo.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* 背景星 */
+  ctx.globalCompositeOperation = 'lighter';
+  for (var i = 0; i < backStars.length; i++){
+    var s = backStars[i];
+    var tw = 0.6 + 0.4 * Math.sin(time * 0.0012 + s.tw);
+    ctx.globalAlpha = s.a * tw;
+    ctx.fillStyle = '#cfe3ff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.s, 0, 6.2832);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  /* --- 地面光晕 --- */
+  var gy = CY + TREE_H / 2 * fitZoom * zoom * 0.92;
+  var gr = ctx.createRadialGradient(CX, gy, 0, CX, gy, TREE_R * 2.1 * fitZoom * zoom);
+  gr.addColorStop(0, 'rgba(40,120,90,0.20)');
+  gr.addColorStop(0.5, 'rgba(20,70,60,0.08)');
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gr;
+  ctx.save();
+  ctx.translate(CX, gy);
+  ctx.scale(1, 0.28);
+  ctx.translate(-CX, -gy);
+  ctx.fillRect(0, gy - TREE_R * 2.1 * fitZoom * zoom, W, TREE_R * 4.2 * fitZoom * zoom);
+  ctx.restore();
+
+  /* --- 雪花（远层） --- */
+  for (var si = 0; si < snow.length; si++){
+    var sn = snow[si];
+    sn.y += sn.vy * dt * 0.06;
+    sn.sw += sn.sws * dt * 0.001;
+    if (sn.y > 500){ sn.y = -480; sn.x = rand(-620, 620); sn.z = rand(-420, 420); }
+    var pp = project(sn.x + Math.sin(sn.sw) * 26, sn.y, sn.z, cr, sr);
+    var sz = Math.max(1, sn.size * pp.sc);
+    ctx.globalAlpha = sn.a * 0.42;
+    ctx.drawImage(makeGlow(232, 242, 255), pp.sx - sz * 1.2, pp.sy - sz * 1.2, sz * 2.4, sz * 2.4);
+  }
+
+  /* --- 树冠剪影 --- */
+  drawCanopy(cr, sr);
+
+  /* --- 排序后的树粒子 --- */
+  tmp.length = 0;
+  for (var pi = 0; pi < treeParts.length; pi++){
+    var tp = treeParts[pi];
+    var pr = project(tp.x, tp.y, tp.z, cr, sr);
+    tmp.push({
+      sx: pr.sx, sy: pr.sy, sc: pr.sc, depth: pr.depth,
+      size: tp.size, r: tp.r, g: tp.g, b: tp.b,
+      a: tp.a, tw: tp.tw, tws: tp.tws, lamp: tp.lamp
+    });
+  }
+  tmp.sort(function(A, B){ return A.depth - B.depth; });
+
+  for (var ti = 0; ti < tmp.length; ti++){
+    var q = tmp[ti];
+    var flick = q.lamp
+      ? 0.55 + 0.45 * Math.max(0, Math.sin(time * 0.0016 * q.tws + q.tw))
+      : 0.78 + 0.22 * Math.sin(time * 0.0011 * q.tws + q.tw);
+    /* 彩球/灯串深度遮挡感 */
+    var dep = 0.55 + 0.45 * (q.depth < 0 ? 1 : 0.78);
+    var al = q.a * flick * dep + pulse * 0.55;
+    al = Math.min(1, al);
+    var s2 = q.size * q.sc * (1 + pulse * 0.25);
+    ctx.globalAlpha = al;
+    ctx.drawImage(makeGlow(q.r, q.g, q.b), q.sx - s2 / 2, q.sy - s2 / 2, s2, s2);
+  }
+
+  /* --- 彩球 --- */
+  for (var oi = 0; oi < ornament.length; oi++){
+    var orn = ornament[oi];
+    var op = project(orn.x, orn.y, orn.z, cr, sr);
+    var flick2 = 0.62 + 0.38 * Math.sin(time * 0.0012 * orn.sp + orn.ph);
+    var os = orn.size * op.sc * (1 + pulse * 0.4);
+    ctx.globalAlpha = Math.min(1, 0.85 * flick2 + pulse * 0.4);
+    ctx.drawImage(makeGlow(orn.r, orn.g, orn.b), op.sx - os * 0.95, op.sy - os * 0.95, os * 1.9, os * 1.9);
+    ctx.globalAlpha = Math.min(1, 0.9 * flick2);
+    ctx.drawImage(makeGlow(255, 255, 255), op.sx - os * 0.14, op.sy - os * 0.16, os * 0.3, os * 0.3);
+  }
+
+  /* --- 顶星 --- */
+  var stp = project(0, -TREE_H / 2 - 34, 0, cr, sr);
+  var starPulse = 0.72 + 0.28 * Math.sin(time * 0.0022);
+  var starS = 120 * stp.sc * (1 + starPulse * 0.15 + pulse * 0.5);
+  ctx.globalAlpha = 0.55 * starPulse;
+  ctx.drawImage(makeGlow(255, 236, 170), stp.sx - starS, stp.sy - starS, starS * 2, starS * 2);
+  ctx.globalAlpha = 0.95;
+  drawStar(stp.sx, stp.sy, 26 * stp.sc * (1 + starPulse * 0.08), '#fff6d6');
+
+  /* 光芒 */
+  ctx.strokeStyle = 'rgba(255,240,190,0.55)';
+  ctx.lineWidth = 1.6;
+  ctx.globalAlpha = 0.35 + 0.4 * starPulse;
+  for (var ry = 0; ry < 4; ry++){
+    var ang2 = rotY * 0.6 + ry * Math.PI / 2;
+    var len = (60 + 22 * starPulse) * stp.sc;
+    ctx.beginPath();
+    ctx.moveTo(stp.sx - Math.cos(ang2) * len, stp.sy - Math.sin(ang2) * len);
+    ctx.lineTo(stp.sx + Math.cos(ang2) * len, stp.sy + Math.sin(ang2) * len);
+    ctx.stroke();
+  }
+
+  /* --- 爆发粒子 --- */
+  ctx.globalCompositeOperation = 'lighter';
+  for (var bi = bursts.length - 1; bi >= 0; bi--){
+    var bu = bursts[bi];
+    bu.life -= bu.decay * dt * 0.06;
+    if (bu.life <= 0){ bursts.splice(bi, 1); continue; }
+    bu.x += bu.vx * dt * 0.004;
+    bu.y += bu.vy * dt * 0.004;
+    bu.vy += 8 * dt * 0.004;
+    ctx.globalAlpha = bu.life;
+    var bs = bu.size * (1 + (1 - bu.life) * 1.4);
+    ctx.drawImage(makeGlow(bu.r, bu.g, bu.b), bu.x - bs, bu.y - bs, bs * 2, bs * 2);
+  }
+  ctx.globalAlpha = 1;
+
+  /* --- 祝福文字 --- */
+  drawTitle();
+
+  ctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(frame);
+}
+
+var showMsg = 0;
+function drawTitle(){
+  var baseSize = Math.min(W * 1.05, H * 0.62);
+  var fs = Math.max(22, Math.min(baseSize * 0.082, 74));
+  var tx = CX + touchShiftX;
+  var treeBottom = CY + (TREE_H / 2) * fitZoom * zoom * 0.98;
+  var ty = Math.min(treeBottom + fs * 1.55, H * 0.845);
+  fs = Math.min(fs, (H * 0.845 - treeBottom) / 1.9);
+
+  var grad = ctx.createLinearGradient(tx - fs * 5, ty, tx + fs * 5, ty + fs * 0.5);
+  grad.addColorStop(0, '#c9a86a');
+  grad.addColorStop(0.35, '#ffeec7');
+  grad.addColorStop(0.6, '#fffaf0');
+  grad.addColorStop(1, '#d9b877');
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 ' + fs + 'px Georgia, "Songti SC", serif';
+  ctx.shadowColor = 'rgba(255,214,140,0.85)';
+  ctx.shadowBlur = 26 + 10 * Math.sin(time * 0.0015);
+  ctx.fillStyle = grad;
+  ctx.fillText('Merry Christmas', tx, ty);
+
+  var sub = Math.max(11, fs * 0.22);
+  ctx.font = '400 ' + sub + 'px Georgia, serif';
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = 'rgba(255,200,140,0.6)';
+  ctx.fillStyle = 'rgba(226,208,175,0.75)';
+  ctx.fillText('2 0 2 6   ·   peace  &  light', tx, ty + fs * 1.15);
+  ctx.restore();
+
+  /* 点击后的祝福语 */
+  if (pulse > 0.35){
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (pulse - 0.35) / 0.5);
+    ctx.textAlign = 'center';
+    ctx.font = '400 ' + Math.max(12, fs * 0.3) + 'px Georgia, "Songti SC", serif';
+    ctx.fillStyle = 'rgba(255,245,220,0.92)';
+    ctx.shadowColor = 'rgba(255,210,160,0.8)';
+    ctx.shadowBlur = 18;
+    ctx.fillText('愿灯火长明，愿你被温柔以待', tx, CY + (TREE_H / 2) * fitZoom * zoom * 0.92 + fs * 3.9);
+    ctx.restore();
+  }
+}
+
+function drawCanopy(cr, sr){
+  var LAYERS = 20;
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  for (var i = 0; i < LAYERS; i++){
+    var h0 = i / LAYERS, h1 = (i + 1) / LAYERS;
+    var y0 = -TREE_H / 2 + TREE_H * (1 - h0);
+    var y1 = -TREE_H / 2 + TREE_H * (1 - h1);
+    var r0 = coneRadius(h0) * 0.96;
+    var r1 = coneRadius(h1) * 0.96;
+
+    var yTop = project(0, y0, 0, cr, sr).sy;
+    var yBot = project(0, y1, 0, cr, sr).sy;
+
+    /* 采样环上的点，得到该层在屏幕上的左右边界 */
+    var min0 = 1e9, max0 = -1e9, min1 = 1e9, max1 = -1e9;
+    for (var k = 0; k < 8; k++){
+      var th = k / 8 * Math.PI * 2;
+      var p0 = project(Math.cos(th) * r0, y0, Math.sin(th) * r0, cr, sr);
+      var p1 = project(Math.cos(th) * r1, y1, Math.sin(th) * r1, cr, sr);
+      if (p0.sx < min0) min0 = p0.sx; if (p0.sx > max0) max0 = p0.sx;
+      if (p1.sx < min1) min1 = p1.sx; if (p1.sx > max1) max1 = p1.sx;
+    }
+
+    var alpha = 0.55 + 0.35 * (i / LAYERS);
+    var g = ctx.createLinearGradient(0, yTop, 0, yBot);
+    g.addColorStop(0, 'rgba(9,48,34,' + (alpha * 0.85) + ')');
+    g.addColorStop(0.55, 'rgba(6,36,27,' + alpha + ')');
+    g.addColorStop(1, 'rgba(3,22,18,' + (alpha * 0.9) + ')');
+    ctx.fillStyle = g;
+
+    var mx = (min0 + max0 + min1 + max1) / 4;
+    ctx.beginPath();
+    ctx.moveTo(min0 + (max0 - min0) * 0.18, yTop + 1);
+    ctx.lineTo(max0 - (max0 - min0) * 0.18, yTop + 1);
+    ctx.lineTo(max1 + 3, yBot + 1);
+    ctx.lineTo(min1 - 3, yBot + 1);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawStar(cx, cy, R, color){
+  ctx.save();
+  ctx.beginPath();
+  for (var i = 0; i < 10; i++){
+    var rr = (i % 2 === 0) ? R : R * 0.42;
+    var a = -Math.PI / 2 + i * Math.PI / 5;
+    var x = cx + Math.cos(a) * rr;
+    var y = cy + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.shadowColor = 'rgba(255,226,150,0.95)';
+  ctx.shadowBlur = 18;
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ---------- 启动 ---------- */
+window.addEventListener('resize', function(){
+  resize();
+});
+resize();
+buildTree();
+buildSnow();
+requestAnimationFrame(frame);
+
+/* 8 秒后弱化提示 */
+setTimeout(function(){ hintEl.style.opacity = 0.35; }, 8000);
+
+})();
+</script>
+</body>
+</html>
