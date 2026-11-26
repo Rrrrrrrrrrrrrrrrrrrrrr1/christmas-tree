@@ -226,16 +226,33 @@ function project(x,y,z,cr,sr){
 /* ---------- 照片挂件 ---------- */
 function addPhotoImage(img){
   var n = photoItems.length;
+  /* 找一个不与已有挂件重叠的位置 */
+  var h = 0.2, a = n * 2.399, size = 34 + Math.random() * 8;
+  for (var tries = 0; tries < 40; tries++){
+    var ch = 0.16 + Math.random() * 0.68;
+    var ca = Math.random() * Math.PI * 2;
+    var ok = true;
+    for (var j = 0; j < photoItems.length; j++){
+      var o = photoItems[j];
+      var ry1 = coneRadius(ch), ry2 = coneRadius(o.h);
+      var dx = Math.cos(ca) * ry1 - Math.cos(o.a) * ry2;
+      var dz = Math.sin(ca) * ry1 - Math.sin(o.a) * ry2;
+      var dy = (-TREE_H/2 + TREE_H*(1-ch)) - (-TREE_H/2 + TREE_H*(1-o.h));
+      if (Math.sqrt(dx*dx + dz*dz + dy*dy*0.55) < 78) { ok = false; break; }
+    }
+    if (ok){ h = ch; a = ca; break; }
+  }
   photoItems.push({
     img: img,
-    h: 0.16 + ((n * 0.135) % 0.68) + rand(-0.03, 0.03),
-    a: n * 2.399 + rand(-0.25, 0.25),
-    size: 48,
-    ph: Math.random()*Math.PI*2,
-    born: time,
+    h: h,
+    a: a,
+    size: size,
+    ph: Math.random() * Math.PI * 2,
+    spinPh: rand(0.8, 1.6),
+    born: performance.now(),
     sx: -999, sy: -999, r: 0
   });
-  if (photoItems.length > 12) photoItems.shift();
+  if (photoItems.length > 15) photoItems.shift();
 }
 
 function loadFile(file, cb){
@@ -551,45 +568,69 @@ function drawPhotos(cr, sr){
   for (var i=0;i<photoItems.length;i++){
     var it = photoItems[i];
     var h = it.h;
-    var rad = coneRadius(h)*1.03;
+    var rad = coneRadius(h)*1.04;
     var y = -TREE_H/2 + TREE_H*(1-h);
     var x = Math.cos(it.a)*rad, z = Math.sin(it.a)*rad;
 
-    var p = project(x,y,z,cr,sr);
-    var anchor = project(x, y - 70, z, cr, sr);
-    var pop = Math.min(1, (time - it.born)/700);
-    var R = it.size * p.sc * (0.8 + 0.2*pop);
-    var dep = p.depth < 0 ? 1 : 0.72;
-    var sway = Math.sin(time*0.0012 + it.ph) * 0.03;
-    var sx = p.sx + Math.sin(sway)*R*0.3;
+    var p = project(x, y, z, cr, sr);
+    /* 挂点：树枝内侧上方 */
+    var anchor = project(Math.cos(it.a)*rad*0.82, y - 76, Math.sin(it.a)*rad*0.82, cr, sr);
 
-    it.sx = sx; it.sy = p.sy; it.r = R;
+    var R = it.size * p.sc;
+    var dep = p.depth < 0 ? 1 : 0.74;
 
+    /* 出生下落动画 */
+    var k = Math.min(1, Math.max(0, (performance.now() - it.born) / 900));
+    var ease = 1 - Math.pow(1 - k, 3);
+    var fall = (1 - ease) * 70 * p.sc;
+
+    /* 摆动 */
+    var ang = Math.sin(time * 0.0011 * it.spinPh + it.ph) * 0.055;
+    var len = 78 * p.sc;
+    var sx = anchor.sx + Math.sin(ang) * len;
+    var sy = anchor.sy + Math.cos(ang) * len - fall;
+
+    it.sx = sx; it.sy = sy; it.r = R;
+
+    /* 吊线 */
     ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 0.55*dep;
+    ctx.globalAlpha = 0.5 * dep;
+    ctx.strokeStyle = 'rgba(255,224,170,0.85)';
+    ctx.lineWidth = Math.max(1, R * 0.030);
+    ctx.beginPath(); ctx.moveTo(anchor.sx, anchor.sy); ctx.lineTo(sx, sy - R); ctx.stroke();
 
-    /* 挂线 */
-    drawString(anchor.sx, anchor.sy, sx, p.sy - R, 0.45*dep);
+    /* 小挂钩 */
+    ctx.globalAlpha = 0.85 * dep;
+    ctx.fillStyle = 'rgba(255,228,172,0.95)';
+    ctx.beginPath(); ctx.arc(sx, sy - R * 1.02, Math.max(1.2, R * 0.10), 0, Math.PI * 2); ctx.fill();
 
     /* 光晕 */
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.55*dep;
-    ctx.drawImage(makeGlow(255,220,170), sx-R*1.5, p.sy-R*1.5, R*3, R*3);
+    ctx.globalAlpha = 0.42 * dep;
+    ctx.drawImage(makeGlow(255,222,176), sx - R*1.5, sy - R*1.5, R*3, R*3);
 
+    /* 照片本体（随摆动轻微旋转） */
     ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = pop*dep;
+    ctx.globalAlpha = Math.min(1, k * 1.4) * dep;
     ctx.save();
-    ctx.beginPath(); ctx.arc(sx, p.sy, R, 0, Math.PI*2); ctx.clip();
+    ctx.translate(sx, sy);
+    ctx.rotate(ang * 0.9);
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI*2); ctx.clip();
     var iw = it.img.width, ih = it.img.height;
-    var s = Math.max((R*2)/iw, (R*2)/ih);
-    ctx.drawImage(it.img, sx-(iw*s)/2, p.sy-(ih*s)/2, iw*s, ih*s);
+    var scl = Math.max((R*2)/iw, (R*2)/ih);
+    ctx.drawImage(it.img, -(iw*scl)/2, -(ih*scl)/2, iw*scl, ih*scl);
     ctx.restore();
 
-    /* 金色圈 */
+    /* 金色细圈 */
     ctx.globalAlpha = dep;
-    ctx.strokeStyle = 'rgba(255,226,170,0.85)';
+    ctx.strokeStyle = 'rgba(255,226,170,0.9)';
     ctx.lineWidth = Math.max(1, R*0.07);
-    ctx.beginPath(); ctx.arc(sx, p.sy, R*0.96, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx, sy, R*0.97, 0, Math.PI*2); ctx.stroke();
+
+    /* 高光 */
+    ctx.globalAlpha = 0.35 * dep;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath(); ctx.arc(sx - R*0.32, sy - R*0.36, R*0.16, 0, Math.PI*2); ctx.fill();
     ctx.globalAlpha = 1;
   }
 }
